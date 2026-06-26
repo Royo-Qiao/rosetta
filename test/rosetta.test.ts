@@ -1,0 +1,250 @@
+import { describe, expect, it } from "vitest";
+import { convertAnthropicToWorkersAI, anthropicMessageFromWorkersAI, validateMessagesRequest } from "../src/anthropic";
+import { resolveModelCapabilities, capabilitiesFor } from "../src/models";
+import { APPS, getApp, ccswitchUrl, hermesSnippet, traeSnippet } from "../src/apps";
+import type { Env } from "../src/types";
+import worker from "../src/index";
+
+/** Minimal stub Env with a Workers AI binding. */
+function makeEnv(overrides: Partial<Env> = {}): Env {
+  return {
+    AI: { run: async () => ({ response: "ok", usage: { prompt_tokens: 1, completion_tokens: 1 } }) },
+    CF_AI_MODEL: "@cf/moonshotai/kimi-k2.7-code",
+    GATEWAY_AUTH_TOKEN: "",
+    MAX_BODY_BYTES: "2000000",
+    ...overrides
+  };
+}
+
+function callWorker(method: string, path: string, env: Env, body?: unknown, headers: Record<string, string> = {}): Promise<Response> {
+  const init: RequestInit<RequestInitCfProperties> = {
+    method,
+    headers: { "content-type": "application/json", ...headers }
+  };
+  if (body !== undefined) {
+    init.body = JSON.stringify(body);
+  }
+  return worker.fetch(new Request(`https://rosetta.test${path}`, init), env);
+}
+
+describe("model resolution", () => {
+  it("configured model always wins", () => {
+    const resolved = resolveModelCapabilities("claude-sonnet-4-5", "@cf/zai-org/glm-5.2");
+    expect(resolved.id).toBe("@cf/zai-org/glm-5.2");
+    expect(resolved.capabilities.family).toBe("boundless");
+    expect(resolved.capabilities.tools).toBe("openai");
+  });
+
+  it("honours a bare @cf id from the client", () => {
+    const resolved = resolveModelCapabilities("@cf/meta/llama-3.3-70b-instruct-fp8-fast", undefined);
+    expect(resolved.id).toBe("@cf/meta/llama-3.3-70b-instruct-fp8-fast");
+    expect(resolved.capabilities.family).toBe("native");
+    expect(resolved.capabilities.tools).toBe("native");
+  });
+
+  it("maps a claude-* alias to the default model when nothing is configured", () => {
+    const resolved = resolveModelCapabilities("claude-opus-4-7", undefined);
+    expect(resolved.id).toBe("@cf/moonshotai/kimi-k2.7-code");
+    expect(resolved.alias).toBe("claude-opus-4-7");
+    expect(resolved.capabilities.family).toBe("boundless");
+  });
+
+  it("defaults an unknown @cf id to boundless capabilities with a warning", () => {
+    const resolved = resolveModelCapabilities("@cf/fictional/new-model", undefined);
+    expect(resolved.id).toBe("@cf/fictional/new-model");
+    expect(resolved.capabilities.family).toBe("boundless");
+    expect(resolved.warnings.length).toBeGreaterThan(0);
+  });
+
+  it("capabilitiesFor returns boundless defaults for an unknown id", () => {
+    expect(capabilitiesFor("@cf/unknown/x").family).toBe("boundless");
+  });
+});
+
+describe("per-family request shaping", () => {
+  it("kimi (boundless) uses max_completion_tokens and chat_template_kwargs with thinking on by default", () => {
+    const request = validateMessagesRequest({ model: "claude-sonnet-4-5", messages: [{ role: "user", content: "hi" }] });
+    const converted = convertAnthropicToWorkersAI(request, "@cf/moonshotai/kimi-k2.7-code");
+    expect(converted.input.max_completion_tokens).toBe(1024);
+    expect(converted.input.max_tokens).toBeUndefined();
+    expect((converted.input.chat_template_kwargs as { thinking: boolean }).thinking).toBe(true);
+    expect((converted.input.chat_template_kwargs as { clear_thinking: boolean }).clear_thinking).toBe(false);
+  });
+
+  it("respects an explicit thinking.type=disabled for kimi", () => {
+    const request = validateMessagesRequest({
+      model: "claude-sonnet-4-5",
+      messages: [{ role: "user", content: "hi" }],
+      thinking: { type: "disabled" }
+    });
+    const converted = convertAnthropicToWorkersAI(request, "@cf/moonshotai/kimi-k2.7-code");
+    expect((converted.input.chat_template_kwargs as { thinking: boolean }).thinking).toBe(false);
+  });
+
+  it("non-kimi boundless model omits chat_template_kwargs", () => {
+    const request = validateMessagesRequest({ model: "claude-sonnet-4-5", messages: [{ role: "user", content: "hi" }] });
+    const converted = convertAnthropicToWorkersAI(request, "@cf/zai-org/glm-5.2");
+    expect(converted.input.chat_template_kwargs).toBeUndefined();
+    expect(converted.input.max_completion_tokens).toBe(1024);
+  });
+
+  it("native model uses max_tokens and flat tool shape", () => {
+    const request = validateMessagesRequest({
+      model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+      max_tokens: 64,
+      tools: [{ name: "read", description: "d", input_schema: { type: "object", properties: {} } }],
+      messages: [{ role: "user", content: "x" }]
+    });
+    const converted = convertAnthropicToWorkersAI(request);
+    expect(converted.input.max_tokens).toBe(64);
+    expect(converted.input.max_completion_tokens).toBeUndefined();
+    const tools = converted.input.tools as Array<Record<string, unknown>>;
+    expect(tools[0]).toMatchObject({ name: "read", parameters: { type: "object", properties: {} } });
+    expect(tools[0]).not.toHaveProperty("type");
+    expect(tools[0]).not.toHaveProperty("function");
+  });
+
+  it("native model passes top_k through without a warning", () => {
+    const request = validateMessagesRequest({
+      model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+      top_k: 40,
+      messages: [{ role: "user", content: "x" }]
+    });
+    const converted = convertAnthropicToWorkersAI(request);
+    expect(converted.input.top_k).toBe(40);
+    expect(converted.warnings.find((w) => w.field === "top_k")).toBeUndefined();
+  });
+
+  it("boundless model drops top_k with a warning", () => {
+    const request = validateMessagesRequest({
+      model: "claude-sonnet-4-5",
+      top_k: 40,
+      messages: [{ role: "user", content: "x" }]
+    });
+    const converted = convertAnthropicToWorkersAI(request);
+    expect(converted.input.top_k).toBeUndefined();
+    expect(converted.warnings.find((w) => w.field === "top_k")).toBeDefined();
+  });
+
+  it("tool-less native model strips tools and warns", () => {
+    const request = validateMessagesRequest({
+      model: "@cf/qwen/qwq-32b",
+      tools: [{ name: "read", description: "d", input_schema: {} }],
+      messages: [{ role: "user", content: "x" }]
+    });
+    const converted = convertAnthropicToWorkersAI(request);
+    expect(converted.input.tools).toBeUndefined();
+    expect(converted.warnings.find((w) => w.field === "tools")).toBeDefined();
+  });
+
+  it("still extracts flat native tool_calls from a native response", () => {
+    const response = anthropicMessageFromWorkersAI(
+      { response: "", usage: { prompt_tokens: 1, completion_tokens: 1 }, tool_calls: [{ name: "read", arguments: { path: "a" } }] },
+      "claude-sonnet-4-5"
+    );
+    expect(response.content).toEqual([{ type: "tool_use", id: expect.any(String), name: "read", input: { path: "a" } }]);
+    expect(response.stop_reason).toBe("tool_use");
+  });
+});
+
+describe("apps table", () => {
+  it("covers all five clients", () => {
+    expect(APPS.map((a) => a.id).sort()).toEqual(["claude", "hermes", "openclaw", "opencode", "trae"]);
+  });
+
+  it("ccswitch opencode endpoint gets /v1 suffix, anthropic apps do not", () => {
+    const opencode = getApp("opencode")!;
+    const claude = getApp("claude")!;
+    expect(ccswitchUrl(opencode, "https://x.workers.dev", "k")).toContain("endpoint=https%3A%2F%2Fx.workers.dev%2Fv1");
+    expect(ccswitchUrl(claude, "https://x.workers.dev", "k")).toContain("endpoint=https%3A%2F%2Fx.workers.dev&");
+  });
+
+  it("hermes snippet uses anthropic_messages and the bare endpoint", () => {
+    const snippet = hermesSnippet("https://x.workers.dev", "GATEWAY_AUTH_TOKEN", "claude-sonnet-4-5");
+    expect(snippet).toContain("api_mode: anthropic_messages");
+    expect(snippet).toContain("base_url: https://x.workers.dev");
+    expect(snippet).toContain("key_env: GATEWAY_AUTH_TOKEN");
+  });
+
+  it("trae snippet gives Anthropic-format UI steps", () => {
+    const snippet = traeSnippet("https://x.workers.dev", "fake-key", "claude-sonnet-4-5");
+    expect(snippet).toContain("Anthropic");
+    expect(snippet).toContain("claude-sonnet-4-5");
+  });
+});
+
+describe("routing", () => {
+  it("/health reports the configured model and family", async () => {
+    const res = await callWorker("GET", "/health", makeEnv({ CF_AI_MODEL: "@cf/zai-org/glm-5.2" }));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toMatchObject({ ok: true, service: "rosetta", model: "@cf/zai-org/glm-5.2", family: "boundless" });
+  });
+
+  it("/v1/models lists the configured model, the catalog, and claude aliases", async () => {
+    const res = await callWorker("GET", "/v1/models", makeEnv());
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { data: Array<{ id: string }> };
+    const ids = body.data.map((m) => m.id);
+    expect(ids).toContain("@cf/moonshotai/kimi-k2.7-code");
+    expect(ids).toContain("@cf/zai-org/glm-5.2");
+    expect(ids).toContain("claude-sonnet-4-5");
+  });
+
+  it("/ccswitch redirects for ccswitch apps (claude/opencode/openclaw)", async () => {
+    for (const id of ["claude", "opencode", "openclaw"] as const) {
+      const res = await callWorker("GET", `/ccswitch?app=${id}`, makeEnv());
+      expect(res.status).toBe(302);
+      expect(res.headers.get("location") ?? "").toContain("ccswitch://v1/import");
+    }
+  });
+
+  it("/ccswitch renders a snippet page for hermes and trae", async () => {
+    for (const id of ["hermes", "trae"] as const) {
+      const res = await callWorker("GET", `/ccswitch?app=${id}`, makeEnv());
+      expect(res.status).toBe(200);
+      expect(res.headers.get("content-type")).toContain("text/html");
+      const body = await res.text();
+      expect(body).toContain("Rosetta");
+    }
+  });
+
+  it("/ccswitch rejects an unknown app with 400", async () => {
+    const res = await callWorker("GET", "/ccswitch?app=bogus", makeEnv());
+    expect(res.status).toBe(400);
+  });
+
+  it("/home renders all five app cards", async () => {
+    const res = await callWorker("GET", "/", makeEnv());
+    const body = await res.text();
+    for (const app of APPS) {
+      expect(body).toContain(`/ccswitch?app=${app.id}`);
+    }
+  });
+
+  it("authorizes with a configured token", async () => {
+    const env = makeEnv({ GATEWAY_AUTH_TOKEN: "secret" });
+    const unauth = await callWorker("POST", "/v1/messages", env, { model: "claude-sonnet-4-5", max_tokens: 8, messages: [{ role: "user", content: "hi" }] });
+    expect(unauth.status).toBe(401);
+
+    const withKey = await callWorker(
+      "POST",
+      "/v1/messages",
+      env,
+      { model: "claude-sonnet-4-5", max_tokens: 8, messages: [{ role: "user", content: "hi" }] },
+      { "x-api-key": "secret" }
+    );
+    expect(withKey.status).toBe(200);
+  });
+
+  it("stream responses carry CORS headers", async () => {
+    const res = await callWorker(
+      "POST",
+      "/v1/messages",
+      makeEnv(),
+      { model: "claude-sonnet-4-5", max_tokens: 8, stream: true, messages: [{ role: "user", content: "hi" }] }
+    );
+    expect(res.headers.get("access-control-allow-origin")).toBe("*");
+    await res.text();
+  });
+});

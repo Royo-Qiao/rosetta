@@ -1,0 +1,19 @@
+name = "rosetta"
+main = "src/index.ts"
+compatibility_date = "2026-05-01"
+workers_dev = true
+
+[ai]
+binding = "AI"
+
+[vars]
+# Any Cloudflare Workers AI text model id. See /v1/models for the full list.
+CF_AI_MODEL = "@cf/moonshotai/kimi-k2.7-code"
+PUBLIC_BASE_URL = "https://cf-workers-anthropic-gateway.royo-dev.art"
+# Set this to require Authorization: Bearer <token>. Leave empty to accept fake keys.
+GATEWAY_AUTH_TOKEN = ""
+MAX_BODY_BYTES = "2000000"
+
+[[routes]]
+pattern = "cf-workers-anthropic-gateway.royo-dev.art"
+custom_domain = true

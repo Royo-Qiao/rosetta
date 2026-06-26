@@ -1,0 +1,24 @@
+{
+  "name": "rosetta",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Anthropic/OpenAI-compatible gateway in front of Cloudflare Workers AI — one configured model, import into Claude Code, opencode, Hermes, OpenClaw, or TRAE.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Royo-Qiao/rosetta.git"
+  },
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260419.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.10",
+    "wrangler": "^4.51.0"
+  }
+}
