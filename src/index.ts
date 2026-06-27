@@ -274,14 +274,19 @@ function ccswitchRedirect(request: Request, env: Env): Response {
   const requestedModel = url.searchParams.get("model") || undefined;
   const resolved = resolveModelCapabilities(requestedModel, env.CF_AI_MODEL);
 
-  if (app.importKind === "ccswitch") {
+  const apiKeyEnv = env.GATEWAY_AUTH_TOKEN?.trim() ? "GATEWAY_AUTH_TOKEN" : "fake-key";
+  const modelAlias = resolved.alias ?? resolved.id;
+
+  // opencode / openclaw: straight to the one-click ccswitch deep link.
+  if (app.importKind === "ccswitch" && app.id !== "claude") {
     return Response.redirect(ccswitchUrl(app, endpoint, apiKey), 302);
   }
 
-  const apiKeyEnv = env.GATEWAY_AUTH_TOKEN?.trim() ? "GATEWAY_AUTH_TOKEN" : "fake-key";
-  const modelAlias = resolved.alias ?? resolved.id;
+  // Claude Code: render the env block (BASE_URL + model defaults) alongside a
+  // one-click ccswitch import button, so the imported config carries model routing.
   const snippet = appSnippet(app, endpoint, apiKey, apiKeyEnv, modelAlias);
-  return snippetPage(app, snippet, resolved);
+  const deepLink = app.importKind === "ccswitch" ? ccswitchUrl(app, endpoint, apiKey, modelAlias) : undefined;
+  return snippetPage(app, snippet, resolved, deepLink);
 }
 
 function homePage(request: Request, env: Env): Response {
@@ -420,8 +425,16 @@ ANTHROPIC_AUTH_TOKEN=${escapeHtml(apiKey)}</pre>
   });
 }
 
-function snippetPage(app: { label: string }, snippet: string, resolved?: { id: string; capabilities: { family: string } }): Response {
+function snippetPage(
+  app: { label: string },
+  snippet: string,
+  resolved?: { id: string; capabilities: { family: string } },
+  deepLink?: string
+): Response {
   const modelLine = resolved ? `<p>Model: <code>${escapeHtml(resolved.id)}</code> (${resolved.capabilities.family})</p>` : "";
+  const importBtn = deepLink
+    ? `<p><a href="${escapeHtml(deepLink)}"><button class="primary">One-click import into ${escapeHtml(app.label)} via CC Switch →</button></a></p>`
+    : "";
   const html = `<!doctype html>
 <html lang="en">
 <head>
@@ -434,11 +447,14 @@ function snippetPage(app: { label: string }, snippet: string, resolved?: { id: s
     a { color: #075985; }
     button { font: inherit; padding: 6px 14px; border: 1px solid #d1d5db; border-radius: 6px; background: #fff; cursor: pointer; }
     button:hover { background: #f3f4f6; }
+    button.primary { background: #075985; color: #fff; border-color: #075985; font-weight: 600; }
+    button.primary:hover { background: #0a6da3; }
   </style>
 </head>
 <body>
   <h1>Rosetta — ${escapeHtml(app.label)}</h1>
   ${modelLine}
+  ${importBtn}
   <p>Copy this into your ${escapeHtml(app.label)} configuration:</p>
   <pre id="snippet">${escapeHtml(snippet)}</pre>
   <p><button onclick="navigator.clipboard.writeText(document.getElementById('snippet').textContent).then(()=>this.textContent='Copied ✓').catch(()=>{})">Copy</button></p>

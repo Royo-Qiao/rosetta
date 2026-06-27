@@ -40,15 +40,43 @@ export function getApp(id: string | null): AppDescriptor | undefined {
   return APPS.find((app) => app.id === id);
 }
 
-/** Build a ccswitch:// provider-import deep link. */
-export function ccswitchUrl(app: AppDescriptor, endpoint: string, apiKey: string): string {
+/** Build a ccswitch:// provider-import deep link. For Claude Code, model defaults are attached. */
+export function ccswitchUrl(app: AppDescriptor, endpoint: string, apiKey: string, modelAlias?: string): string {
   const deepLink = new URL("ccswitch://v1/import");
   deepLink.searchParams.set("resource", "provider");
   deepLink.searchParams.set("app", app.id);
   deepLink.searchParams.set("name", "Rosetta");
   deepLink.searchParams.set("endpoint", `${endpoint}${app.endpointSuffix}`);
   deepLink.searchParams.set("apiKey", apiKey);
+  // CC Switch passes these as Claude Code's haiku/sonnet/opus model defaults.
+  if (app.id === "claude" && modelAlias) {
+    deepLink.searchParams.set("haikuModel", modelAlias);
+    deepLink.searchParams.set("sonnetModel", modelAlias);
+    deepLink.searchParams.set("opusModel", modelAlias);
+  }
   return deepLink.toString();
+}
+
+/**
+ * Claude Code env block. BASE_URL first, then model defaults so Claude Code routes
+ * every tier (haiku/sonnet/opus) to the chosen Rosetta model. Paste into
+ * ~/.claude/settings.json `env` or your shell.
+ */
+export function claudeSnippet(endpoint: string, apiKey: string, modelAlias: string): string {
+  return [
+    "{",
+    `  "env": {`,
+    `    "ANTHROPIC_BASE_URL": "${endpoint}",`,
+    `    "ANTHROPIC_AUTH_TOKEN": "${apiKey}",`,
+    `    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "${modelAlias}",`,
+    `    "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME": "${modelAlias}",`,
+    `    "ANTHROPIC_DEFAULT_OPUS_MODEL": "${modelAlias}",`,
+    `    "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME": "${modelAlias}",`,
+    `    "ANTHROPIC_DEFAULT_SONNET_MODEL": "${modelAlias}",`,
+    `    "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME": "${modelAlias}"`,
+    `  }`,
+    `}`
+  ].join("\n");
 }
 
 /**
@@ -87,9 +115,11 @@ export function traeSnippet(endpoint: string, apiKey: string, modelAlias: string
   ].join("\n");
 }
 
-/** Render the snippet for a snippet-kind app. */
+/** Render the config snippet for a snippet-kind app (hermes/trae/claude). */
 export function appSnippet(app: AppDescriptor, endpoint: string, apiKey: string, apiKeyEnv: string, modelAlias: string): string {
   switch (app.id) {
+    case "claude":
+      return claudeSnippet(endpoint, apiKey, modelAlias);
     case "hermes":
       return hermesSnippet(endpoint, apiKeyEnv, modelAlias);
     case "trae":

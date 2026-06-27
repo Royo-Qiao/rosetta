@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { convertAnthropicToWorkersAI, anthropicMessageFromWorkersAI, validateMessagesRequest } from "../src/anthropic";
 import { resolveModelCapabilities, capabilitiesFor } from "../src/models";
 import { costTierOf, WORKERS_AI_FREE_ALLOWANCE } from "../src/models";
-import { APPS, getApp, ccswitchUrl, hermesSnippet, traeSnippet } from "../src/apps";
+import { APPS, getApp, ccswitchUrl, hermesSnippet, traeSnippet, claudeSnippet } from "../src/apps";
 import type { Env } from "../src/types";
 import worker from "../src/index";
 
@@ -184,6 +184,24 @@ describe("apps table", () => {
     expect(snippet).toContain("Anthropic");
     expect(snippet).toContain("claude-sonnet-4-5");
   });
+
+  it("claude snippet puts BASE_URL first and fills all model tiers", () => {
+    const snippet = claudeSnippet("https://x.workers.dev", "fake-key", "glm-5.2");
+    expect(snippet.indexOf("ANTHROPIC_BASE_URL")).toBeLessThan(snippet.indexOf("ANTHROPIC_AUTH_TOKEN"));
+    for (const tier of ["HAIKU", "OPUS", "SONNET"]) {
+      expect(snippet).toContain(`ANTHROPIC_DEFAULT_${tier}_MODEL`);
+      expect(snippet).toContain(`ANTHROPIC_DEFAULT_${tier}_MODEL_NAME`);
+    }
+    expect(snippet).toContain('"glm-5.2"');
+  });
+
+  it("ccswitch claude deep link carries model defaults", () => {
+    const claude = getApp("claude")!;
+    const url = ccswitchUrl(claude, "https://x.workers.dev", "k", "glm-5.2");
+    expect(url).toContain("haikuModel=glm-5.2");
+    expect(url).toContain("sonnetModel=glm-5.2");
+    expect(url).toContain("opusModel=glm-5.2");
+  });
 });
 
 describe("routing", () => {
@@ -208,12 +226,29 @@ describe("routing", () => {
     expect(body.pricing.free_allowance_neurons_per_day).toBe(10_000);
   });
 
-  it("/ccswitch redirects for ccswitch apps (claude/opencode/openclaw)", async () => {
-    for (const id of ["claude", "opencode", "openclaw"] as const) {
+  it("/ccswitch redirects for opencode/openclaw (ccswitch deep links)", async () => {
+    for (const id of ["opencode", "openclaw"] as const) {
       const res = await callWorker("GET", `/ccswitch?app=${id}`, makeEnv());
       expect(res.status).toBe(302);
       expect(res.headers.get("location") ?? "").toContain("ccswitch://v1/import");
     }
+  });
+
+  it("/ccswitch?app=claude renders an env snippet with BASE_URL first + model defaults", async () => {
+    const res = await callWorker("GET", "/ccswitch?app=claude&model=@cf/zai-org/glm-5.2", makeEnv());
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    // BASE_URL before auth token / model keys
+    const baseUrlPos = body.indexOf("ANTHROPIC_BASE_URL");
+    const authPos = body.indexOf("ANTHROPIC_AUTH_TOKEN");
+    const modelPos = body.indexOf("ANTHROPIC_DEFAULT_HAIKU_MODEL");
+    expect(baseUrlPos).toBeLessThan(authPos);
+    expect(authPos).toBeLessThan(modelPos);
+    expect(body).toContain("@cf/zai-org/glm-5.2");
+    expect(body).toContain("ANTHROPIC_DEFAULT_SONNET_MODEL");
+    expect(body).toContain("ANTHROPIC_DEFAULT_OPUS_MODEL");
+    // one-click import button present
+    expect(body).toContain("One-click import into");
   });
 
   it("/ccswitch renders a snippet page for hermes and trae", async () => {
