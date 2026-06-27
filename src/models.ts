@@ -23,6 +23,23 @@ export type ReasoningKind = "kimi-thinking" | "reasoning-effort" | "none";
 
 export type ModelStatus = "ga" | "deprecated";
 
+/** Coarse cost bucket derived from Neurons/M input. */
+export type CostTier = "cheap" | "standard" | "expensive";
+
+/**
+ * Per-model cost in Cloudflare Workers AI Neurons per million tokens. All models
+ * share one free allowance (see WORKERS_AI_FREE_ALLOWANCE); the rate is what varies.
+ * Source: https://developers.cloudflare.com/workers-ai/platform/pricing/ (2026-06-27).
+ */
+export interface ModelCost {
+  /** Neurons per 1M input tokens. */
+  neuronsPerMIn: number;
+  /** Neurons per 1M output tokens. */
+  neuronsPerMOut: number;
+  /** Neurons per 1M cached input tokens (some Boundless models only). */
+  neuronsPerMCachedIn?: number;
+}
+
 export interface ModelCapabilities {
   family: ModelFamily;
   tools: ToolShape;
@@ -35,10 +52,30 @@ export interface ModelEntry extends ModelCapabilities {
   displayName: string;
   contextWindow?: number;
   status: ModelStatus;
+  cost?: ModelCost;
   notes?: string;
 }
 
 export const DEFAULT_MODEL = "@cf/moonshotai/kimi-k2.7-code";
+
+/**
+ * Shared free allowance — every catalog model draws from this same daily budget
+ * on both the Free and Paid plans. Overage ($0.011/1k Neurons) needs Workers Paid.
+ * There is no per-model free/paid split.
+ */
+export const WORKERS_AI_FREE_ALLOWANCE = {
+  neuronsPerDay: 10_000,
+  overagePer1000Neurons: 0.011,
+  paidPlanRequiredForOverage: true
+};
+
+/** <10k = cheap, 10k–60k = standard, >60k = expensive (Neurons/M input). */
+export function costTierOf(cost: ModelCost | undefined): CostTier | undefined {
+  if (!cost) return undefined;
+  if (cost.neuronsPerMIn < 10_000) return "cheap";
+  if (cost.neuronsPerMIn <= 60_000) return "standard";
+  return "expensive";
+}
 
 /** Conservative defaults for a model we don't recognise: assume OpenAI-compatible. */
 const BOUNDLESS_DEFAULT_CAPABILITIES: ModelCapabilities = {
@@ -70,6 +107,7 @@ export const MODEL_REGISTRY: ModelEntry[] = [
     vision: true,
     reasoning: "kimi-thinking",
     status: "ga",
+    cost: { neuronsPerMIn: 86364, neuronsPerMOut: 363636, neuronsPerMCachedIn: 17273 },
     notes: "Default. Coding-focused sibling of K2.6."
   },
   {
@@ -80,7 +118,8 @@ export const MODEL_REGISTRY: ModelEntry[] = [
     tools: "openai",
     vision: true,
     reasoning: "kimi-thinking",
-    status: "ga"
+    status: "ga",
+    cost: { neuronsPerMIn: 86364, neuronsPerMOut: 363636, neuronsPerMCachedIn: 14545 }
   },
   {
     id: "@cf/moonshotai/kimi-k2.5",
@@ -90,7 +129,8 @@ export const MODEL_REGISTRY: ModelEntry[] = [
     tools: "openai",
     vision: true,
     reasoning: "kimi-thinking",
-    status: "deprecated"
+    status: "deprecated",
+    cost: { neuronsPerMIn: 54545, neuronsPerMOut: 272727, neuronsPerMCachedIn: 9091 }
   },
   {
     id: "@cf/zai-org/glm-5.2",
@@ -100,7 +140,8 @@ export const MODEL_REGISTRY: ModelEntry[] = [
     tools: "openai",
     vision: false,
     reasoning: "reasoning-effort",
-    status: "ga"
+    status: "ga",
+    cost: { neuronsPerMIn: 127273, neuronsPerMOut: 400000, neuronsPerMCachedIn: 23636 }
   },
   {
     id: "@cf/zai-org/glm-4.7-flash",
@@ -110,7 +151,8 @@ export const MODEL_REGISTRY: ModelEntry[] = [
     tools: "openai",
     vision: false,
     reasoning: "reasoning-effort",
-    status: "ga"
+    status: "ga",
+    cost: { neuronsPerMIn: 5500, neuronsPerMOut: 36400 }
   },
   {
     id: "@cf/google/gemma-4-26b-a4b-it",
@@ -120,7 +162,8 @@ export const MODEL_REGISTRY: ModelEntry[] = [
     tools: "openai",
     vision: true,
     reasoning: "reasoning-effort",
-    status: "ga"
+    status: "ga",
+    cost: { neuronsPerMIn: 9091, neuronsPerMOut: 27273 }
   },
   {
     id: "@cf/nvidia/nemotron-3-120b-a12b",
@@ -130,7 +173,8 @@ export const MODEL_REGISTRY: ModelEntry[] = [
     tools: "openai",
     vision: false,
     reasoning: "reasoning-effort",
-    status: "ga"
+    status: "ga",
+    cost: { neuronsPerMIn: 45455, neuronsPerMOut: 136364 }
   },
 
   // ── Native ──────────────────────────────────────────────────────────────
@@ -142,7 +186,8 @@ export const MODEL_REGISTRY: ModelEntry[] = [
     tools: "native",
     vision: true,
     reasoning: "none",
-    status: "ga"
+    status: "ga",
+    cost: { neuronsPerMIn: 24545, neuronsPerMOut: 77273 }
   },
   {
     id: "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
@@ -152,7 +197,8 @@ export const MODEL_REGISTRY: ModelEntry[] = [
     tools: "native",
     vision: false,
     reasoning: "none",
-    status: "ga"
+    status: "ga",
+    cost: { neuronsPerMIn: 26668, neuronsPerMOut: 204805 }
   },
   {
     id: "@cf/meta/llama-3.2-11b-vision-instruct",
@@ -163,6 +209,7 @@ export const MODEL_REGISTRY: ModelEntry[] = [
     vision: true,
     reasoning: "none",
     status: "ga",
+    cost: { neuronsPerMIn: 4410, neuronsPerMOut: 61493 },
     notes: "Vision via top-level `image` field (not implemented yet). Needs a one-time license agree call."
   },
   {
@@ -172,7 +219,8 @@ export const MODEL_REGISTRY: ModelEntry[] = [
     tools: "none",
     vision: false,
     reasoning: "none",
-    status: "ga"
+    status: "ga",
+    cost: { neuronsPerMIn: 4625, neuronsPerMOut: 30475 }
   },
   {
     id: "@cf/meta/llama-3.2-1b-instruct",
@@ -181,7 +229,8 @@ export const MODEL_REGISTRY: ModelEntry[] = [
     tools: "none",
     vision: false,
     reasoning: "none",
-    status: "ga"
+    status: "ga",
+    cost: { neuronsPerMIn: 2457, neuronsPerMOut: 18252 }
   },
   {
     id: "@cf/meta/llama-3.1-8b-instruct-fast",
@@ -190,7 +239,9 @@ export const MODEL_REGISTRY: ModelEntry[] = [
     tools: "none",
     vision: false,
     reasoning: "none",
-    status: "ga"
+    status: "ga",
+    cost: { neuronsPerMIn: 4119, neuronsPerMOut: 34868 },
+    notes: "Cost inferred from llama-3.1-8b-instruct-fp8-fast row (no exact id match in pricing table)."
   },
   {
     id: "@cf/meta/llama-3.1-8b-instruct-fp8",
@@ -199,7 +250,8 @@ export const MODEL_REGISTRY: ModelEntry[] = [
     tools: "none",
     vision: false,
     reasoning: "none",
-    status: "ga"
+    status: "ga",
+    cost: { neuronsPerMIn: 13778, neuronsPerMOut: 26128 }
   },
   {
     id: "@cf/meta/llama-3.1-8b-instruct",
@@ -227,6 +279,7 @@ export const MODEL_REGISTRY: ModelEntry[] = [
     vision: false,
     reasoning: "none",
     status: "ga",
+    cost: { neuronsPerMIn: 44003, neuronsPerMOut: 2730 },
     notes: "Content-safety classifier."
   },
   {
@@ -238,6 +291,7 @@ export const MODEL_REGISTRY: ModelEntry[] = [
     vision: false,
     reasoning: "none",
     status: "ga",
+    cost: { neuronsPerMIn: 4625, neuronsPerMOut: 30475 },
     notes: "Hybrid anomaly: OpenAI-style output but native-style input. Tools not accepted."
   },
   {
@@ -249,6 +303,7 @@ export const MODEL_REGISTRY: ModelEntry[] = [
     vision: false,
     reasoning: "none",
     status: "ga",
+    cost: { neuronsPerMIn: 60000, neuronsPerMOut: 90909 },
     notes: "May emit tool_calls; does not accept tools input."
   },
   {
@@ -260,6 +315,7 @@ export const MODEL_REGISTRY: ModelEntry[] = [
     vision: false,
     reasoning: "none",
     status: "ga",
+    cost: { neuronsPerMIn: 60000, neuronsPerMOut: 90909 },
     notes: "Reasoning model (inherent)."
   },
   {
@@ -270,7 +326,8 @@ export const MODEL_REGISTRY: ModelEntry[] = [
     tools: "native",
     vision: true,
     reasoning: "none",
-    status: "ga"
+    status: "ga",
+    cost: { neuronsPerMIn: 31876, neuronsPerMOut: 50488 }
   },
   {
     id: "@cf/mistralai/mistral-7b-instruct-v0.2",
@@ -291,6 +348,7 @@ export const MODEL_REGISTRY: ModelEntry[] = [
     vision: false,
     reasoning: "none",
     status: "ga",
+    cost: { neuronsPerMIn: 45170, neuronsPerMOut: 443756 },
     notes: "Reasoning model (inherent)."
   },
   {
@@ -301,7 +359,8 @@ export const MODEL_REGISTRY: ModelEntry[] = [
     tools: "native",
     vision: false,
     reasoning: "none",
-    status: "ga"
+    status: "ga",
+    cost: { neuronsPerMIn: 31818, neuronsPerMOut: 68182 }
   },
   {
     id: "@cf/openai/gpt-oss-20b",
@@ -310,7 +369,8 @@ export const MODEL_REGISTRY: ModelEntry[] = [
     tools: "native",
     vision: false,
     reasoning: "none",
-    status: "ga"
+    status: "ga",
+    cost: { neuronsPerMIn: 18182, neuronsPerMOut: 27273 }
   },
   {
     id: "@cf/ibm-granite/granite-4.0-h-micro",
@@ -320,7 +380,9 @@ export const MODEL_REGISTRY: ModelEntry[] = [
     tools: "native",
     vision: false,
     reasoning: "none",
-    status: "ga"
+    status: "ga",
+    cost: { neuronsPerMIn: 1542, neuronsPerMOut: 10158 },
+    notes: "Cheapest model in the catalog."
   },
   {
     id: "@hf/nousresearch/hermes-2-pro-mistral-7b",
@@ -330,7 +392,7 @@ export const MODEL_REGISTRY: ModelEntry[] = [
     vision: false,
     reasoning: "none",
     status: "deprecated",
-    notes: "Legacy @hf/ prefix."
+    notes: "Legacy @hf/ prefix. Neuron cost undocumented (deprecated Beta)."
   }
 ];
 

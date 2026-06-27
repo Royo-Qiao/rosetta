@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { convertAnthropicToWorkersAI, anthropicMessageFromWorkersAI, validateMessagesRequest } from "../src/anthropic";
 import { resolveModelCapabilities, capabilitiesFor } from "../src/models";
+import { costTierOf, WORKERS_AI_FREE_ALLOWANCE } from "../src/models";
 import { APPS, getApp, ccswitchUrl, hermesSnippet, traeSnippet } from "../src/apps";
 import type { Env } from "../src/types";
 import worker from "../src/index";
@@ -58,6 +59,18 @@ describe("model resolution", () => {
 
   it("capabilitiesFor returns boundless defaults for an unknown id", () => {
     expect(capabilitiesFor("@cf/unknown/x").family).toBe("boundless");
+  });
+
+  it("classifies cost tiers from Neuron rates", () => {
+    expect(costTierOf({ neuronsPerMIn: 1542, neuronsPerMOut: 10158 })).toBe("cheap"); // granite
+    expect(costTierOf({ neuronsPerMIn: 26668, neuronsPerMOut: 204805 })).toBe("standard"); // llama-3.3-70b
+    expect(costTierOf({ neuronsPerMIn: 127273, neuronsPerMOut: 400000 })).toBe("expensive"); // glm-5.2
+    expect(costTierOf(undefined)).toBeUndefined();
+  });
+
+  it("exposes a shared free allowance", () => {
+    expect(WORKERS_AI_FREE_ALLOWANCE.neuronsPerDay).toBe(10_000);
+    expect(WORKERS_AI_FREE_ALLOWANCE.overagePer1000Neurons).toBe(0.011);
   });
 });
 
@@ -174,21 +187,25 @@ describe("apps table", () => {
 });
 
 describe("routing", () => {
-  it("/health reports the configured model and family", async () => {
+  it("/health reports the configured model, family, and cost tier", async () => {
     const res = await callWorker("GET", "/health", makeEnv({ CF_AI_MODEL: "@cf/zai-org/glm-5.2" }));
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body).toMatchObject({ ok: true, service: "rosetta", model: "@cf/zai-org/glm-5.2", family: "boundless" });
+    expect(body).toMatchObject({ ok: true, service: "rosetta", model: "@cf/zai-org/glm-5.2", family: "boundless", cost_tier: "expensive" });
+    expect(body.free_allowance_neurons_per_day).toBe(10_000);
   });
 
-  it("/v1/models lists the configured model, the catalog, and claude aliases", async () => {
+  it("/v1/models lists the configured model, the catalog, claude aliases, and pricing", async () => {
     const res = await callWorker("GET", "/v1/models", makeEnv());
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { data: Array<{ id: string }> };
+    const body = (await res.json()) as { data: Array<{ id: string; metadata: { cost_tier?: string } }>; pricing: { free_allowance_neurons_per_day: number } };
     const ids = body.data.map((m) => m.id);
     expect(ids).toContain("@cf/moonshotai/kimi-k2.7-code");
     expect(ids).toContain("@cf/zai-org/glm-5.2");
     expect(ids).toContain("claude-sonnet-4-5");
+    // the configured kimi model is 'expensive' (>60k neurons/M in)
+    expect(body.data[0].metadata.cost_tier).toBe("expensive");
+    expect(body.pricing.free_allowance_neurons_per_day).toBe(10_000);
   });
 
   it("/ccswitch redirects for ccswitch apps (claude/opencode/openclaw)", async () => {

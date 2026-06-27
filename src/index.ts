@@ -7,7 +7,7 @@ import {
   json,
   validateMessagesRequest
 } from "./anthropic";
-import { resolveModelCapabilities, catalogModels } from "./models";
+import { resolveModelCapabilities, catalogModels, costTierOf, WORKERS_AI_FREE_ALLOWANCE } from "./models";
 import { APPS, getApp, ccswitchUrl, appSnippet } from "./apps";
 import { anthropicStreamFromWorkersAI } from "./streaming";
 import {
@@ -46,7 +46,10 @@ async function route(request: Request, env: Env): Promise<Response> {
         service: "rosetta",
         model: resolved.id,
         family: resolved.capabilities.family,
-        capabilities: resolved.capabilities
+        capabilities: resolved.capabilities,
+        cost: resolved.entry?.cost,
+        cost_tier: costTierOf(resolved.entry?.cost),
+        free_allowance_neurons_per_day: WORKERS_AI_FREE_ALLOWANCE.neuronsPerDay
       },
       200,
       corsHeaders()
@@ -192,14 +195,7 @@ function modelsResponse(env: Env): Record<string, unknown> {
       type: "model",
       display_name: `${resolved.entry?.displayName ?? resolved.id} (configured)`,
       created_at: CREATED_AT,
-      metadata: {
-        family: resolved.capabilities.family,
-        tools: resolved.capabilities.tools,
-        vision: resolved.capabilities.vision,
-        reasoning: resolved.capabilities.reasoning,
-        context_window: resolved.entry?.contextWindow,
-        configured: true
-      }
+      metadata: modelMetadata(resolved.entry, resolved.capabilities, true)
     }
   ];
 
@@ -213,13 +209,7 @@ function modelsResponse(env: Env): Record<string, unknown> {
       type: "model",
       display_name: `${entry.displayName} via Rosetta`,
       created_at: CREATED_AT,
-      metadata: {
-        family: entry.family,
-        tools: entry.tools,
-        vision: entry.vision,
-        reasoning: entry.reasoning,
-        context_window: entry.contextWindow
-      }
+      metadata: modelMetadata(entry, entry, false)
     });
   }
 
@@ -234,7 +224,34 @@ function modelsResponse(env: Env): Record<string, unknown> {
     });
   }
 
-  return { object: "list", data };
+  return {
+    object: "list",
+    data,
+    // Shared across every model; see WORKERS_AI_FREE_ALLOWANCE.
+    pricing: {
+      free_allowance_neurons_per_day: WORKERS_AI_FREE_ALLOWANCE.neuronsPerDay,
+      overage_per_1000_neurons: WORKERS_AI_FREE_ALLOWANCE.overagePer1000Neurons,
+      paid_plan_required_for_overage: WORKERS_AI_FREE_ALLOWANCE.paidPlanRequiredForOverage,
+      note: "All models share one daily free allowance; no model is free-only or paid-only."
+    }
+  };
+}
+
+function modelMetadata(
+  entry: { contextWindow?: number; cost?: Parameters<typeof costTierOf>[0] } | undefined,
+  capabilities: { family: string; tools: string; vision: boolean; reasoning: string },
+  configured: boolean
+): Record<string, unknown> {
+  return {
+    family: capabilities.family,
+    tools: capabilities.tools,
+    vision: capabilities.vision,
+    reasoning: capabilities.reasoning,
+    context_window: entry?.contextWindow,
+    cost: entry?.cost,
+    cost_tier: costTierOf(entry?.cost),
+    ...(configured ? { configured: true } : {})
+  };
 }
 
 function ccswitchRedirect(request: Request, env: Env): Response {
