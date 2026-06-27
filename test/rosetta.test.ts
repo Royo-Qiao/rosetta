@@ -190,7 +190,7 @@ describe("routing", () => {
   it("/health reports the configured model, family, and cost tier", async () => {
     const res = await callWorker("GET", "/health", makeEnv({ CF_AI_MODEL: "@cf/zai-org/glm-5.2" }));
     expect(res.status).toBe(200);
-    const body = await res.json();
+    const body = (await res.json()) as Record<string, unknown>;
     expect(body).toMatchObject({ ok: true, service: "rosetta", model: "@cf/zai-org/glm-5.2", family: "boundless", cost_tier: "expensive" });
     expect(body.free_allowance_neurons_per_day).toBe(10_000);
   });
@@ -231,11 +231,21 @@ describe("routing", () => {
     expect(res.status).toBe(400);
   });
 
-  it("/home renders all five app cards", async () => {
+  it("/ccswitch?app=hermes&model=<id> bakes the chosen model into the snippet", async () => {
+    const res = await callWorker("GET", "/ccswitch?app=hermes&model=@cf/ibm-granite/granite-4.0-h-micro", makeEnv());
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toContain("@cf/ibm-granite/granite-4.0-h-micro");
+    expect(body).toContain("anthropic_messages");
+  });
+
+  it("/home renders the configurator with all five apps", async () => {
     const res = await callWorker("GET", "/", makeEnv());
     const body = await res.text();
+    expect(body).toContain("One-click configuration");
+    // apps are embedded in the client-side JS data
     for (const app of APPS) {
-      expect(body).toContain(`/ccswitch?app=${app.id}`);
+      expect(body).toContain(app.label);
     }
   });
 

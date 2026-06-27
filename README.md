@@ -53,7 +53,7 @@ Rosetta emits the matching tool shape, token field (`max_completion_tokens` vs `
 
 ## Import into clients
 
-After deploy, open the Worker root page (`/`) and use the import link for your client. Each is also reachable at `/ccswitch?app=<id>`.
+After deploy, open the Worker root page (`/`) — a one-click configurator lets you pick a model and a client, then generates the matching config or import link. Each is also reachable directly at `/ccswitch?app=<id>&model=<id>`.
 
 | Client | `app=` | Mechanism | API format |
 |---|---|---|---|
@@ -70,6 +70,20 @@ ANTHROPIC_BASE_URL=https://your-worker.workers.dev
 ANTHROPIC_API_KEY=fake-key
 ANTHROPIC_AUTH_TOKEN=fake-key
 ```
+
+## Cost tiers
+
+Cloudflare Workers AI has **no per-model free/paid split** — every model shares one **10,000 Neurons/day** free allowance (on both the Free and Paid plans). Exceeding it requires the Workers Paid plan ($5/mo) + $0.011 per 1,000 Neurons overage. The allowance is uniform; what varies per model is how fast it burns the daily budget (Neurons per million input tokens).
+
+Rosetta tags each model with a `cost_tier` (surfaced in `/v1/models` and `/health`, and shown as a badge in the home-page configurator):
+
+| Tier | Neurons / M input | Examples |
+|---|---|---|
+| **cheap** (<10k) | burns the allowance slowly | IBM Granite 4.0 (1.5k), Llama 3.2 1B (2.5k), GLM 4.7 Flash (5.5k), Gemma 4 (9k) |
+| **standard** (10k–60k) | moderate | Llama 3.3 70B (27k), GPT-OSS 120B (32k), Llama 4 Scout (25k) |
+| **expensive** (>60k) | exhausts the allowance fastest | GLM 5.2 (127k), Kimi K2.6/K2.7 (86k), Qwen2.5 Coder (60k) |
+
+Pick a **cheap** model for experimentation and high-volume free-tier usage; pick **expensive** models (Kimi, GLM) only when you need their tool/vision/reasoning capability and are on the Paid plan. The default `kimi-k2.7-code` is `expensive` — best for tool-heavy clients like Claude Code, but switch to a cheaper model if you're just trying things out on the free tier.
 
 ## Run
 

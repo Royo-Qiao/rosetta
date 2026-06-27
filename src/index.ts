@@ -7,7 +7,7 @@ import {
   json,
   validateMessagesRequest
 } from "./anthropic";
-import { resolveModelCapabilities, catalogModels, costTierOf, WORKERS_AI_FREE_ALLOWANCE } from "./models";
+import { resolveModelCapabilities, catalogModels, costTierOf, WORKERS_AI_FREE_ALLOWANCE, MODEL_REGISTRY } from "./models";
 import { APPS, getApp, ccswitchUrl, appSnippet } from "./apps";
 import { anthropicStreamFromWorkersAI } from "./streaming";
 import {
@@ -269,26 +269,42 @@ function ccswitchRedirect(request: Request, env: Env): Response {
   const endpoint = publicBaseUrl(request, env);
   const apiKey = env.GATEWAY_AUTH_TOKEN?.trim() || "fake-key";
 
+  // Optional ?model= lets the home-page configurator generate config for any model,
+  // not just the configured one. Falls back to the configured model.
+  const requestedModel = url.searchParams.get("model") || undefined;
+  const resolved = resolveModelCapabilities(requestedModel, env.CF_AI_MODEL);
+
   if (app.importKind === "ccswitch") {
     return Response.redirect(ccswitchUrl(app, endpoint, apiKey), 302);
   }
 
   const apiKeyEnv = env.GATEWAY_AUTH_TOKEN?.trim() ? "GATEWAY_AUTH_TOKEN" : "fake-key";
-  const modelAlias = resolveModelCapabilities(undefined, env.CF_AI_MODEL).alias ?? "claude-sonnet-4-5";
+  const modelAlias = resolved.alias ?? resolved.id;
   const snippet = appSnippet(app, endpoint, apiKey, apiKeyEnv, modelAlias);
-  return snippetPage(app, snippet);
+  return snippetPage(app, snippet, resolved);
 }
 
 function homePage(request: Request, env: Env): Response {
   const endpoint = publicBaseUrl(request, env);
   const apiKey = env.GATEWAY_AUTH_TOKEN?.trim() || "fake-key";
   const resolved = resolveModelCapabilities(undefined, env.CF_AI_MODEL);
+  const apiKeyEnv = env.GATEWAY_AUTH_TOKEN?.trim() ? "GATEWAY_AUTH_TOKEN" : "fake-key";
 
-  const cards = APPS.map((app) => {
-    const href = `/ccswitch?app=${app.id}`;
-    const verb = app.importKind === "ccswitch" ? "Import into" : "Copy config for";
-    return `<p><a href="${escapeHtml(href)}">${verb} ${escapeHtml(app.label)}</a> <small>(${app.format})</small></p>`;
-  }).join("\n  ");
+  // Catalog for the client-side configurator: id, name, family, cost tier, configured flag.
+  const catalog = MODEL_REGISTRY.map((entry) => ({
+    id: entry.id,
+    name: entry.displayName,
+    family: entry.family,
+    tier: costTierOf(entry.cost),
+    configured: entry.id === resolved.id,
+    status: entry.status
+  }));
+  const configuredId = resolved.id;
+  const catalogJson = JSON.stringify(catalog).replaceAll("</", "<\\/");
+
+  const appsJson = JSON.stringify(
+    APPS.map((app) => ({ id: app.id, label: app.label, format: app.format, importKind: app.importKind }))
+  ).replaceAll("</", "<\\/");
 
   const html = `<!doctype html>
 <html lang="en">
@@ -302,17 +318,96 @@ function homePage(request: Request, env: Env): Response {
     pre { background: #f3f4f6; padding: 16px; border-radius: 8px; overflow-x: auto; }
     a { color: #075985; }
     small { color: #6b7280; }
+    select, button, input { font: inherit; padding: 6px 10px; border: 1px solid #d1d5db; border-radius: 6px; }
+    button.primary { background: #075985; color: #fff; border-color: #075985; font-weight: 600; }
+    button.primary:hover { background: #0a6da3; }
+    .tier { font-size: 11px; font-weight: 600; padding: 1px 6px; border-radius: 10px; margin-left: 6px; vertical-align: middle; }
+    .tier-cheap { background: #dcfce7; color: #166534; }
+    .tier-standard { background: #fef9c3; color: #854d0e; }
+    .tier-expensive { background: #fee2e2; color: #991b1b; }
+    .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+    #config-result { margin-top: 20px; }
   </style>
 </head>
 <body>
   <h1>Rosetta</h1>
-  <p>Anthropic-compatible gateway fronting Cloudflare Workers AI. Configure one model; import into Claude Code, opencode, Hermes, OpenClaw, or TRAE.</p>
-  <p>Active model: <code>${escapeHtml(resolved.id)}</code> (${resolved.capabilities.family})</p>
+  <p>Anthropic-compatible gateway fronting Cloudflare Workers AI. Pick a model and a client below, then one-click generate the config.</p>
+  <p>Active model: <code>${escapeHtml(resolved.id)}</code> (${resolved.capabilities.family}, ${escapeHtml(costTierOf(resolved.entry?.cost) ?? "unknown")} cost) · API key: <code>${escapeHtml(apiKey)}</code></p>
+
+  <h2>One-click configuration</h2>
+  <div class="row">
+    <label>Model <select id="model"></select></label>
+    <label>Client <select id="app"></select></label>
+    <button class="primary" id="generate" onclick="generate()">Generate config</button>
+  </div>
+  <p><small id="model-info"></small></p>
+  <div id="config-result"></div>
+
+  <h2>Plain env vars</h2>
   <pre>ANTHROPIC_BASE_URL=${escapeHtml(endpoint)}
 ANTHROPIC_API_KEY=${escapeHtml(apiKey)}
 ANTHROPIC_AUTH_TOKEN=${escapeHtml(apiKey)}</pre>
-  ${cards}
+
+  <h2>Cost tiers</h2>
+  <p><small>All models share one 10,000 Neurons/day free allowance. The tier shows how fast a model burns it (Neurons/M input).</small></p>
+  <p><span class="tier tier-cheap">cheap</span> &lt;10k · <span class="tier tier-standard">standard</span> 10k–60k · <span class="tier tier-expensive">expensive</span> &gt;60k</p>
+
   <p>Health: <a href="/health">/health</a> · Models: <a href="/v1/models">/v1/models</a></p>
+
+  <script>
+    const CATALOG = ${catalogJson};
+    const APPS = ${appsJson};
+    const CONFIGURED = ${JSON.stringify(configuredId)};
+    const ENDPOINT = ${JSON.stringify(endpoint)};
+    const API_KEY = ${JSON.stringify(apiKey)};
+    const API_KEY_ENV = ${JSON.stringify(apiKeyEnv)};
+
+    const modelSel = document.getElementById('model');
+    const appSel = document.getElementById('app');
+    const info = document.getElementById('model-info');
+    const result = document.getElementById('config-result');
+
+    // Group models by family, configured first, deprecated last.
+    const families = { boundless: 'Boundless (OpenAI-compatible, tools)', native: 'Native (Workers AI)' };
+    for (const family of ['boundless', 'native']) {
+      const og = document.createElement('optgroup');
+      og.label = families[family];
+      for (const m of CATALOG.filter(m => m.family === family)) {
+        const opt = document.createElement('option');
+        opt.value = m.id;
+        const tier = m.tier ? ' [' + m.tier + ']' : '';
+        const cfg = m.configured ? ' ★' : '';
+        const dep = m.status === 'deprecated' ? ' (deprecated)' : '';
+        opt.textContent = m.name + tier + cfg + dep;
+        if (m.id === CONFIGURED) opt.selected = true;
+        og.appendChild(opt);
+      }
+      modelSel.appendChild(og);
+    }
+    for (const app of APPS) {
+      const opt = document.createElement('option');
+      opt.value = app.id;
+      opt.textContent = app.label + ' (' + app.format + ')';
+      appSel.appendChild(opt);
+    }
+
+    function updateInfo() {
+      const m = CATALOG.find(x => x.id === modelSel.value);
+      if (m) info.textContent = m.name + ' · ' + m.family + (m.tier ? ' · ' + m.tier + ' cost' : '') + (m.configured ? ' · configured' : '');
+    }
+    modelSel.onchange = updateInfo;
+    updateInfo();
+
+    function generate() {
+      const modelId = modelSel.value;
+      const app = APPS.find(a => a.id === appSel.value);
+      const url = '/ccswitch?app=' + encodeURIComponent(app.id) + '&model=' + encodeURIComponent(modelId);
+      const verb = app.importKind === 'ccswitch' ? 'Open in CC Switch' : 'View config snippet';
+      result.innerHTML = '<p><a href="' + url + '"><button class="primary">' + verb + ' →</button></a></p>' +
+        '<p><small>Endpoint: <code>' + ENDPOINT + '</code> · API key: <code>' + API_KEY + '</code>' +
+        (app.importKind === 'snippet' ? ' · key env: <code>' + API_KEY_ENV + '</code>' : '') + '</small></p>';
+    }
+  </script>
 </body>
 </html>`;
 
@@ -325,7 +420,8 @@ ANTHROPIC_AUTH_TOKEN=${escapeHtml(apiKey)}</pre>
   });
 }
 
-function snippetPage(app: { label: string }, snippet: string): Response {
+function snippetPage(app: { label: string }, snippet: string, resolved?: { id: string; capabilities: { family: string } }): Response {
+  const modelLine = resolved ? `<p>Model: <code>${escapeHtml(resolved.id)}</code> (${resolved.capabilities.family})</p>` : "";
   const html = `<!doctype html>
 <html lang="en">
 <head>
@@ -336,12 +432,16 @@ function snippetPage(app: { label: string }, snippet: string): Response {
     body { font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 40px; max-width: 920px; line-height: 1.5; color: #111827; }
     pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: #f3f4f6; padding: 16px; border-radius: 8px; overflow-x: auto; white-space: pre-wrap; }
     a { color: #075985; }
+    button { font: inherit; padding: 6px 14px; border: 1px solid #d1d5db; border-radius: 6px; background: #fff; cursor: pointer; }
+    button:hover { background: #f3f4f6; }
   </style>
 </head>
 <body>
   <h1>Rosetta — ${escapeHtml(app.label)}</h1>
+  ${modelLine}
   <p>Copy this into your ${escapeHtml(app.label)} configuration:</p>
-  <pre>${escapeHtml(snippet)}</pre>
+  <pre id="snippet">${escapeHtml(snippet)}</pre>
+  <p><button onclick="navigator.clipboard.writeText(document.getElementById('snippet').textContent).then(()=>this.textContent='Copied ✓').catch(()=>{})">Copy</button></p>
   <p><a href="/">← back to Rosetta</a></p>
 </body>
 </html>`;
