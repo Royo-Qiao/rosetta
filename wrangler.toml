@@ -6,6 +6,10 @@ workers_dev = true
 [ai]
 binding = "AI"
 
+[[kv_namespaces]]
+binding = "USAGE_KV"
+id = "edcad6dfbae54ac4bfb638c52fdbf8bc"
+
 [vars]
 # Any Cloudflare Workers AI text model id. See /v1/models for the full list.
 CF_AI_MODEL = "@cf/moonshotai/kimi-k2.7-code"

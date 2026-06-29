@@ -2,10 +2,15 @@ export interface Env {
   AI: {
     run(model: string, input: Record<string, unknown>): Promise<unknown>;
   };
+  USAGE_KV?: KVNamespace;
   CF_AI_MODEL?: string;
   PUBLIC_BASE_URL?: string;
   GATEWAY_AUTH_TOKEN?: string;
   MAX_BODY_BYTES?: string;
+  CF_OAUTH_CLIENT_ID?: string;
+  CF_OAUTH_CLIENT_SECRET?: string;
+  CF_OAUTH_REDIRECT_URI?: string;
+  CF_OAUTH_SCOPES?: string;
 }
 
 export type AnthropicRole = "user" | "assistant";

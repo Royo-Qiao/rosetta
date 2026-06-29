@@ -9,6 +9,8 @@ import {
 } from "./anthropic";
 import { resolveModelCapabilities, catalogModels, costTierOf, WORKERS_AI_FREE_ALLOWANCE, MODEL_REGISTRY } from "./models";
 import { APPS, getApp, ccswitchUrl, appSnippet } from "./apps";
+import { recordUsage, readUsage } from "./usage";
+import { isCloudflareLoggedIn, oauthCallback, oauthLogin, oauthStatus } from "./oauth";
 import { anthropicStreamFromWorkersAI } from "./streaming";
 import {
   convertOpenAIToWorkersAI,
@@ -60,6 +62,18 @@ async function route(request: Request, env: Env): Promise<Response> {
     return json(modelsResponse(env), 200, corsHeaders());
   }
 
+  if (request.method === "GET" && url.pathname === "/usage") {
+    return json({ ...(await readUsage(env)), oauth: oauthStatus(request, env) }, 200, corsHeaders());
+  }
+
+  if (request.method === "GET" && url.pathname === "/oauth/login") {
+    return oauthLogin(request, env);
+  }
+
+  if (request.method === "GET" && url.pathname === "/oauth/callback") {
+    return oauthCallback(request, env);
+  }
+
   if (request.method === "GET" && url.pathname === "/ccswitch") {
     return ccswitchRedirect(request, env);
   }
@@ -102,7 +116,14 @@ async function createOpenAIChatCompletion(openAIRequest: ReturnType<typeof valid
     }
 
     const upstream = await env.AI.run(converted.model, converted.input);
-    return withCors(openAIChatCompletionFromWorkersAI(upstream, openAIRequest.model ?? converted.model));
+    const response = openAIChatCompletionFromWorkersAI(upstream, openAIRequest.model ?? converted.model);
+    const clone = response.clone();
+    try {
+      await recordUsage(env, converted.model, extractUsage(await clone.json()));
+    } catch {
+      // Usage tracking must never break the completion path.
+    }
+    return withCors(response);
   } catch (error) {
     const status = inferStatus(error);
     return json(
@@ -125,11 +146,17 @@ async function createMessage(anthropicRequest: AnthropicMessagesRequest, env: En
   try {
     if (anthropicRequest.stream) {
       const upstream = env.AI.run(converted.model, converted.input);
-      return withCors(anthropicStreamFromWorkersAI(upstream, converted.modelAlias, converted.warnings));
+      return withCors(
+        anthropicStreamFromWorkersAI(upstream, converted.modelAlias, converted.warnings, (usage) =>
+          recordUsage(env, converted.model, usage)
+        )
+      );
     }
 
     const upstream = await env.AI.run(converted.model, converted.input);
-    return json(anthropicMessageFromWorkersAI(upstream, converted.modelAlias, converted.warnings), 200, corsHeaders());
+    const message = anthropicMessageFromWorkersAI(upstream, converted.modelAlias, converted.warnings);
+    await recordUsage(env, converted.model, extractUsage(message));
+    return json(message, 200, corsHeaders());
   } catch (error) {
     const status = inferStatus(error);
     return anthropicError(status, inferErrorType(status), error instanceof Error ? error.message : "Workers AI request failed.");
@@ -339,6 +366,11 @@ function homePage(request: Request, env: Env): Response {
   <p>Anthropic-compatible gateway fronting Cloudflare Workers AI. Pick a model and a client below, then one-click generate the config.</p>
   <p>Active model: <code>${escapeHtml(resolved.id)}</code> (${resolved.capabilities.family}, ${escapeHtml(costTierOf(resolved.entry?.cost) ?? "unknown")} cost) · API key: <code>${escapeHtml(apiKey)}</code></p>
 
+  <h2>Cloudflare account + local quota</h2>
+  <p><a href="/oauth/login"><button class="primary">Log in with Cloudflare</button></a> <small>${isCloudflareLoggedIn(request) ? "Logged in" : "Not logged in"}</small></p>
+  <pre id="usage">Loading Rosetta-tracked Neuron usage…</pre>
+  <p><small>Cloudflare exposes no documented remaining-neurons API. This counter estimates only requests routed through Rosetta and subtracts them from the shared 10,000 Neurons/day allowance.</small></p>
+
   <h2>One-click configuration</h2>
   <div class="row">
     <label>Model <select id="model"></select></label>
@@ -407,11 +439,26 @@ ANTHROPIC_AUTH_TOKEN=${escapeHtml(apiKey)}</pre>
       const modelId = modelSel.value;
       const app = APPS.find(a => a.id === appSel.value);
       const url = '/ccswitch?app=' + encodeURIComponent(app.id) + '&model=' + encodeURIComponent(modelId);
-      const verb = app.importKind === 'ccswitch' ? 'Open in CC Switch' : 'View config snippet';
+      const verb = app.id === 'claude' || app.importKind === 'snippet' ? 'View config snippet' : 'Open in CC Switch';
       result.innerHTML = '<p><a href="' + url + '"><button class="primary">' + verb + ' →</button></a></p>' +
         '<p><small>Endpoint: <code>' + ENDPOINT + '</code> · API key: <code>' + API_KEY + '</code>' +
         (app.importKind === 'snippet' ? ' · key env: <code>' + API_KEY_ENV + '</code>' : '') + '</small></p>';
     }
+
+    fetch('/usage').then(r => r.json()).then(u => {
+      document.getElementById('usage').textContent = JSON.stringify({
+        day: u.day,
+        neurons_used: Number(u.neurons_used || 0).toFixed(4),
+        remaining_neurons_estimate: Number(u.remaining_neurons_estimate || 0).toFixed(4),
+        free_allowance_neurons: u.free_allowance_neurons,
+        requests: u.requests,
+        logged_in: u.oauth?.logged_in,
+        oauth_configured: u.oauth?.configured,
+        note: u.note
+      }, null, 2);
+    }).catch(() => {
+      document.getElementById('usage').textContent = 'Could not load /usage';
+    });
   </script>
 </body>
 </html>`;
@@ -478,6 +525,14 @@ function publicBaseUrl(request: Request, env: Env): string {
   }
   const url = new URL(request.url);
   return `${url.protocol}//${url.host}`;
+}
+
+function extractUsage(value: unknown): { input_tokens?: number; output_tokens?: number; prompt_tokens?: number; completion_tokens?: number } {
+  if (!value || typeof value !== "object") {
+    return {};
+  }
+  const usage = (value as Record<string, unknown>).usage;
+  return usage && typeof usage === "object" ? (usage as Record<string, number>) : {};
 }
 
 function inferStatus(error: unknown): number {

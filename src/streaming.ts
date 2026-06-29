@@ -1,5 +1,5 @@
 import { anthropicError } from "./anthropic";
-import type { ConversionWarning, OpenAIToolCall } from "./types";
+import type { ConversionWarning, OpenAIToolCall, Usage } from "./types";
 
 interface StreamState {
   writer: WritableStreamDefaultWriter<Uint8Array>;
@@ -10,12 +10,14 @@ interface StreamState {
   nextBlockIndex: number;
   outputText: string;
   stopReason: "end_turn" | "tool_use" | "max_tokens" | "stop_sequence";
+  onUsage?: (usage: Usage) => void | Promise<void>;
 }
 
 export function anthropicStreamFromWorkersAI(
   upstream: unknown,
   modelAlias: string,
-  warnings: ConversionWarning[] = []
+  warnings: ConversionWarning[] = [],
+  onUsage?: (usage: Usage) => void | Promise<void>
 ): Response {
   const body = new TransformStream();
   const writer = body.writable.getWriter();
@@ -28,7 +30,8 @@ export function anthropicStreamFromWorkersAI(
     toolBlocks: new Map(),
     nextBlockIndex: 0,
     outputText: "",
-    stopReason: "end_turn"
+    stopReason: "end_turn",
+    onUsage
   };
 
   void pumpStream(upstream, state, warnings);
@@ -263,10 +266,15 @@ async function finishStream(state: StreamState): Promise<void> {
     await writeEvent(state, "content_block_stop", { type: "content_block_stop", index: block.blockIndex });
   }
 
+  const usage = { input_tokens: 0, output_tokens: Math.max(0, Math.ceil(state.outputText.length / 4)) };
+  if (state.onUsage) {
+    await state.onUsage(usage);
+  }
+
   await writeEvent(state, "message_delta", {
     type: "message_delta",
     delta: { stop_reason: state.stopReason, stop_sequence: null },
-    usage: { output_tokens: Math.max(0, Math.ceil(state.outputText.length / 4)) }
+    usage
   });
   await writeEvent(state, "message_stop", { type: "message_stop" });
   await state.writer.close();

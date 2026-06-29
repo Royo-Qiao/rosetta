@@ -6,6 +6,19 @@ import { APPS, getApp, ccswitchUrl, hermesSnippet, traeSnippet, claudeSnippet } 
 import type { Env } from "../src/types";
 import worker from "../src/index";
 
+function memoryKv(): KVNamespace {
+  const store = new Map<string, string>();
+  return {
+    get: async (key: string, type?: string) => {
+      const value = store.get(key) ?? null;
+      return type === "json" && value ? JSON.parse(value) : value;
+    },
+    put: async (key: string, value: string) => {
+      store.set(key, value);
+    }
+  } as unknown as KVNamespace;
+}
+
 /** Minimal stub Env with a Workers AI binding. */
 function makeEnv(overrides: Partial<Env> = {}): Env {
   return {
@@ -308,5 +321,32 @@ describe("routing", () => {
     );
     expect(res.headers.get("access-control-allow-origin")).toBe("*");
     await res.text();
+  });
+
+  it("tracks local neuron usage for Rosetta-routed requests", async () => {
+    const env = makeEnv({ USAGE_KV: memoryKv() });
+    const before = (await (await callWorker("GET", "/usage", env)).json()) as Record<string, unknown>;
+    expect(before.requests).toBe(0);
+
+    const completion = await callWorker(
+      "POST",
+      "/v1/messages",
+      env,
+      { model: "claude-sonnet-4-5", max_tokens: 8, messages: [{ role: "user", content: "hi" }] }
+    );
+    expect(completion.status).toBe(200);
+
+    const after = (await (await callWorker("GET", "/usage", env)).json()) as Record<string, unknown>;
+    expect(after.requests).toBe(1);
+    expect(after.neurons_used as number).toBeGreaterThan(0);
+    expect(after.remaining_neurons_estimate as number).toBeLessThan(10_000);
+  });
+
+  it("/oauth/login renders setup instructions when OAuth is not configured", async () => {
+    const res = await callWorker("GET", "/oauth/login", makeEnv());
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toContain("Cloudflare OAuth is not configured");
+    expect(body).toContain("CF_OAUTH_CLIENT_ID");
   });
 });

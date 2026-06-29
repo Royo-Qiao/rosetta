@@ -85,6 +85,42 @@ Rosetta tags each model with a `cost_tier` (surfaced in `/v1/models` and `/healt
 
 Pick a **cheap** model for experimentation and high-volume free-tier usage; pick **expensive** models (Kimi, GLM) only when you need their tool/vision/reasoning capability and are on the Paid plan. The default `kimi-k2.7-code` is `expensive` — best for tool-heavy clients like Claude Code, but switch to a cheaper model if you're just trying things out on the free tier.
 
+## Local quota tracking and Cloudflare login
+
+Cloudflare exposes **no documented API** for remaining Workers AI Neurons. Rosetta therefore tracks usage locally for requests routed through Rosetta:
+
+- `GET /usage` returns today's estimated Neurons used, estimated remaining free allowance, request count, and per-model breakdown.
+- The home page shows this `/usage` data.
+- The estimate only includes Rosetta-routed requests; usage from the Cloudflare dashboard, other Workers, or AI Gateway is not included.
+- KV writes are approximate under concurrent traffic. Good enough for a dashboard; not enough for accounting. Accountants ruin everything.
+
+Setup requires a KV namespace:
+
+```toml
+[[kv_namespaces]]
+binding = "USAGE_KV"
+id = "<your-kv-namespace-id>"
+```
+
+The "Log in with Cloudflare" button uses Cloudflare self-managed OAuth when configured. It is **not** `wrangler login` — Wrangler's login callback is localhost-only (`localhost:8976`), which cannot work from a deployed Worker.
+
+Required secrets for OAuth:
+
+```sh
+npx wrangler secret put CF_OAUTH_CLIENT_ID
+npx wrangler secret put CF_OAUTH_CLIENT_SECRET
+# optional, defaults to: openid email profile
+npx wrangler secret put CF_OAUTH_SCOPES
+```
+
+Set the OAuth client redirect URI to:
+
+```text
+https://your-worker-domain/oauth/callback
+```
+
+OAuth currently confirms account login for the UI. The quota number remains Rosetta's local estimate because Cloudflare does not publish a remaining-Neurons API.
+
 ## Run
 
 ```sh
