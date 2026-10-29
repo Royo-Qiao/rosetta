@@ -43,9 +43,18 @@ configured model and service metadata:
 curl https://your-worker.workers.dev/health
 ```
 
-Expected fields include `"ok": true` and `"service": "rosetta"`. This route reports
-configuration metadata; it does not perform an inference request or prove a
-client's end-to-end tool-use compatibility.
+### Expected output
+
+The `/health` response includes these fields (excerpt from the route in
+[src/index.ts](src/index.ts); other model fields are omitted here):
+
+```json
+{"ok": true, "service": "rosetta"}
+```
+
+This is configuration metadata, not an inference result. It does not prove a
+client's end-to-end tool-use compatibility, and this documentation pass did not
+run the request.
 
 ## Endpoints
 
@@ -188,8 +197,18 @@ workflow separately; model-family conversion is not complete API equivalence.
 that pass through this gateway and cannot account for other Workers or dashboard
 requests. See [local quota tracking](#local-quota-tracking-and-cloudflare-login).
 
-**Can this release forward image input?** No. The current compatibility section
-explains the dropped image blocks and other differences from Anthropic behavior.
+**How should I evaluate image or other content-block support?** Read the
+model-specific conversion paths in [src/anthropic.ts](src/anthropic.ts) and
+[src/openai.ts](src/openai.ts), then exercise your required client/model path.
+This documentation pass did not validate image input.
+
+## Feedback and contributions
+
+Report reproducible compatibility issues through
+[Issues](https://github.com/Royo-Qiao/rosetta/issues). Include the commit, client,
+configured model, minimal request shape and sanitized error. Separate a static
+finding from a real inference test. Pull requests with a focused reproduction
+are welcome; keep API tokens, private prompts and account configuration local.
 
 ## License
 
