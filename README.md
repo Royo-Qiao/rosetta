@@ -1,8 +1,51 @@
-# Rosetta
+# Rosetta — Cloudflare Workers AI gateway for Anthropic and OpenAI clients
 
 An Anthropic-compatible gateway that fronts **Cloudflare Workers AI**. Set one model in config; import the provider into Claude Code, opencode, Hermes, OpenClaw, or TRAE. Rosetta translates the Anthropic Messages API (and an OpenAI Chat Completions route) onto each Workers AI model family's native contract.
 
 A practical compatibility layer, not a full Anthropic API implementation.
+
+Use it when a client expects the Anthropic Messages or OpenAI Chat Completions
+format but inference should run on your Cloudflare Workers AI configuration.
+`claude-*` compatibility aliases route to that configured Workers AI model; they
+do not select Anthropic-hosted Claude models.
+
+[Quickstart](#quickstart) · [Client configuration](#import-into-clients) ·
+[Supported API routes](#endpoints) · [Compatibility limits](#compatibility-notes)
+
+## Quickstart
+
+The repository uses Node/npm and Wrangler. Start from your own Cloudflare account
+with Workers AI access. Before deploying a personal instance, edit `wrangler.toml`:
+replace the checked-in `USAGE_KV` namespace ID, `PUBLIC_BASE_URL`, and optional
+custom-domain `[[routes]]` entry with resources you control. Choose `CF_AI_MODEL`
+and configure `GATEWAY_AUTH_TOKEN` as described below.
+
+```sh
+git clone https://github.com/Royo-Qiao/rosetta.git
+cd rosetta
+npm install
+npm test
+npm run typecheck
+npm run dev
+```
+
+When your configuration is ready, the deployment command is:
+
+```sh
+npm run deploy
+```
+
+These commands are defined in [package.json](package.json). After deployment,
+open your Worker URL to generate the client configuration. To inspect the
+configured model and service metadata:
+
+```sh
+curl https://your-worker.workers.dev/health
+```
+
+Expected fields include `"ok": true` and `"service": "rosetta"`. This route reports
+configuration metadata; it does not perform an inference request or prove a
+client's end-to-end tool-use compatibility.
 
 ## Endpoints
 
@@ -16,7 +59,7 @@ A practical compatibility layer, not a full Anthropic API implementation.
 
 ## Configure
 
-`wrangler.toml` binds Workers AI as `env.AI` and defaults to:
+`wrangler.toml` binds Workers AI as `env.AI`. Configure these variables for your deployment:
 
 ```toml
 [vars]
@@ -73,7 +116,13 @@ ANTHROPIC_AUTH_TOKEN=fake-key
 
 ## Cost tiers
 
-Cloudflare Workers AI has **no per-model free/paid split** — every model shares one **10,000 Neurons/day** free allowance (on both the Free and Paid plans). Exceeding it requires the Workers Paid plan ($5/mo) + $0.011 per 1,000 Neurons overage. The allowance is uniform; what varies per model is how fast it burns the daily budget (Neurons per million input tokens).
+The values in this section describe the repository's model registry in
+[`src/models.ts`](src/models.ts), whose catalog notes were checked on 2026-06-26.
+They are not a live pricing or billing query. Check the current
+[Workers AI pricing](https://developers.cloudflare.com/workers-ai/platform/pricing/)
+for your account before making a cost estimate.
+
+The registry encodes a shared **10,000 Neurons/day** free allowance, a Workers Paid plan amount of **$5/mo**, and **$0.011 per 1,000 Neurons** overage. Model cost metadata is expressed in Neurons per million tokens; these checked-in values can become stale.
 
 Rosetta tags each model with a `cost_tier` (surfaced in `/v1/models` and `/health`, and shown as a badge in the home-page configurator):
 
@@ -121,21 +170,6 @@ https://your-worker-domain/oauth/callback
 
 OAuth currently confirms account login for the UI. The quota number remains Rosetta's local estimate because Cloudflare does not publish a remaining-Neurons API.
 
-## Run
-
-```sh
-npm install
-npm test
-npm run typecheck
-npm run dev
-```
-
-Deploy:
-
-```sh
-npm run deploy
-```
-
 ## Compatibility notes
 
 - Anthropic `system` and `messages` are converted to Workers AI chat messages.
@@ -143,6 +177,19 @@ npm run deploy
 - Streaming responses are converted to Anthropic SSE events: `message_start`, `content_block_start`, `content_block_delta`, `content_block_stop`, `message_delta`, `message_stop`.
 - `count_tokens` returns a conservative local estimate so clients do not hard fail.
 - Cloudflare quota, model, and rate-limit errors are returned as Anthropic-style error JSON. There is no paid fallback.
+
+## Questions before adopting
+
+**Can a health check prove that Claude Code works with a model?** No. `/health`
+returns configured metadata. Exercise a real completion and the client's tool-use
+workflow separately; model-family conversion is not complete API equivalence.
+
+**Is `/usage` my account's remaining Cloudflare quota?** No. It estimates requests
+that pass through this gateway and cannot account for other Workers or dashboard
+requests. See [local quota tracking](#local-quota-tracking-and-cloudflare-login).
+
+**Can this release forward image input?** No. The current compatibility section
+explains the dropped image blocks and other differences from Anthropic behavior.
 
 ## License
 
